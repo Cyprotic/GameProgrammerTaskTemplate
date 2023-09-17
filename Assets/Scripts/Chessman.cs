@@ -1,14 +1,16 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Serialization;
 
 public abstract class Chessman : MonoBehaviour
 {
-
     public int CurrentX { set; get; }
     public int CurrentY { set; get; }
 
     public bool isWhite;
+
+    public string personality;
 
     public void SetPosition(int x, int y)
     {
@@ -36,5 +38,23 @@ public abstract class Chessman : MonoBehaviour
             }
         }
         return false;
+    }
+    
+    /// <summary>
+    /// Destroys itself and the enemy
+    /// </summary>
+    /// <param name="attackingPiece"></param>
+    public void AttackBack(Chessman attackingPiece)
+    {
+        Destroy(attackingPiece.gameObject);
+        Die();
+    }
+    
+    /// <summary>
+    /// Destroy itself
+    /// </summary>
+    public void Die()
+    {
+        Destroy(gameObject);
     }
 }

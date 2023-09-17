@@ -1,10 +1,21 @@
-﻿using System;
-using System.Collections;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
+using System.Threading.Tasks;
+using Gpt4All;
+using TMPro;
 using UnityEngine;
+using Random = UnityEngine.Random;
 
 public class BoardManager : MonoBehaviour
 {
+    [SerializeField]
+    private LlmManager manager;
+    [SerializeField]
+    private PiecePersonality personality;
+    [SerializeField]
+    private TextMeshProUGUI textPanelLLM;
+    [SerializeField]
+    private TextMeshProUGUI textPanelPersonality;
+    
     public static BoardManager Instance { get; set; }
     private bool[,] allowedMoves { get; set; }
 
@@ -66,6 +77,10 @@ public class BoardManager : MonoBehaviour
 
     private void SelectChessman(int x, int y)
     {
+        // Reset texts
+        textPanelPersonality.text = "";
+        textPanelLLM.text = "";
+        
         if (Chessmans[x, y] == null) return;
 
         if (Chessmans[x, y].isWhite != isWhiteTurn) return;
@@ -94,21 +109,52 @@ public class BoardManager : MonoBehaviour
         selectedMat.mainTexture = previousMat.mainTexture;
         selectedChessman.GetComponent<MeshRenderer>().material = selectedMat;
 
+        // Write what is the personality of the piece
+        textPanelPersonality.text = Chessmans[x, y].personality;
+
         BoardHighlights.Instance.HighLightAllowedMoves(allowedMoves);
     }
 
-    private bool calculateVictory()
+    /// <summary>
+    ///  Query's the LLM for the response given the defending and attacking pieces as input.
+    /// </summary>
+    /// <param name="defendingPiece"></param>
+    /// <param name="attackingPiece"></param>
+    /// <returns></returns>
+    private async Task<string> CalculateDecision(Chessman defendingPiece, Chessman attackingPiece)
     {
-        var rng = new System.Random();
-        return rng.Next(0, 100) < 50;
+        // LLM query string
+        string result = await manager.Prompt(
+        $"A {attackingPiece.GetType()} known for being {attackingPiece.personality} attacks an enemy {defendingPiece.personality} {defendingPiece.GetType()}, Do you attack or die?");
+
+        // Write the result of the query to the user
+        textPanelLLM.text = result;
+
+        // Didn't want to create a wall of IF's but the LLM is not very cooperative in providing just the option and nothing else. But I got a cool game design idea out of it.
+        // Check for an answer back from the LLM.
+        if(result.Contains("attack"))
+            return "attack back";
+        
+        if(result.Contains("die"))
+            return "die";
+        
+        if(result.Contains("change team"))
+            return "change team";
+        
+        if(result.Contains("retreat"))
+            return "retreat";
+
+        return "";
     }
 
-    private void MoveChessman(int x, int y)
+    private async void MoveChessman(int x, int y)
     {
         if (allowedMoves[x, y])
         {
             Chessman c = Chessmans[x, y];
-            var victory = true;
+            // Check for enpassants
+            if (x == EnPassantMove[0] && y == EnPassantMove[1])
+                c = isWhiteTurn ? Chessmans[x, y - 1] : Chessmans[x, y + 1];
 
             if (c != null && c.isWhite != isWhiteTurn)
             {
@@ -120,29 +166,13 @@ public class BoardManager : MonoBehaviour
                     EndGame();
                     return;
                 }
-
-                victory = calculateVictory();
-                if (victory)
-                {
-                    activeChessman.Remove(c.gameObject);
-                    Destroy(c.gameObject);
-                }
-                else
-                {
-                    activeChessman.Remove(selectedChessman.gameObject);
-                    Destroy(selectedChessman.gameObject);
-                }
+                // Decide the outcome
+                await DecideOutcome(c, x, y);
             }
-            if (x == EnPassantMove[0] && y == EnPassantMove[1])
-            {
-                if (isWhiteTurn)
-                    c = Chessmans[x, y - 1];
-                else
-                    c = Chessmans[x, y + 1];
-
-                activeChessman.Remove(c.gameObject);
-                Destroy(c.gameObject);
-            }
+            // Or if neither, just move
+            if (c == null)
+                MovePieceToSquare(x, y);
+            
             EnPassantMove[0] = -1;
             EnPassantMove[1] = -1;
             if (selectedChessman.GetType() == typeof(Pawn))
@@ -167,14 +197,7 @@ public class BoardManager : MonoBehaviour
                 else if (selectedChessman.CurrentY == 6 && y == 4)
                     EnPassantMove[1] = y + 1;
             }
-
-            if (victory)
-            {
-                Chessmans[selectedChessman.CurrentX, selectedChessman.CurrentY] = null;
-                selectedChessman.transform.position = GetTileCenter(x, y);
-                selectedChessman.SetPosition(x, y);
-                Chessmans[x, y] = selectedChessman;
-            }
+            
             isWhiteTurn = !isWhiteTurn;
         }
 
@@ -182,6 +205,41 @@ public class BoardManager : MonoBehaviour
 
         BoardHighlights.Instance.HideHighlights();
         selectedChessman = null;
+    }
+
+    /// <summary>
+    ///  Calls the calculate decision task to query the LLM for a response.
+    /// </summary>
+    /// <param name="enemyPiece"></param>
+    /// <param name="movingToX"></param>
+    /// <param name="movingToY"></param>
+    private async Task DecideOutcome(Chessman enemyPiece, int movingToX, int movingToY)
+    {
+        var decision = await CalculateDecision(enemyPiece,selectedChessman);
+        
+        switch (decision)
+        {
+            case "attack back": 
+                enemyPiece.AttackBack(selectedChessman);
+                break;
+                    
+            case "die": 
+                enemyPiece.Die();
+                MovePieceToSquare(movingToX, movingToY);
+                break;
+                    
+            default:
+                Debug.Log("Something went wrong with the LLM response");
+                break;
+        }
+    }
+
+    private void MovePieceToSquare(int x, int y)
+    {
+        Chessmans[selectedChessman.CurrentX, selectedChessman.CurrentY] = null;
+        selectedChessman.transform.position = GetTileCenter(x, y);
+        selectedChessman.SetPosition(x, y);
+        Chessmans[x, y] = selectedChessman;
     }
 
     private void UpdateSelection()
@@ -217,6 +275,13 @@ public class BoardManager : MonoBehaviour
 
         go.transform.SetParent(transform);
         Chessmans[x, y] = go.GetComponent<Chessman>();
+        if (personality != null)
+            Chessmans[x, y].personality = personality.personalitiesList[Random.Range(0,personality.personalitiesList.Count - 1)] ;
+        else
+        {
+            Debug.Log("something wrong here");
+        }
+        
         Chessmans[x, y].SetPosition(x, y);
         activeChessman.Add(go);
     }
